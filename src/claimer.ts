@@ -64,11 +64,10 @@ export class Claimer {
 		return claimableRewardEpochIds;
 	}
 
+	// Returns null only when the epoch's reward data exists but holds no claim
+	// for this beneficiary/type. Throws when the data cannot be fetched at all.
 	async getRewardClaimData(rewardEpochId: number) {
 		const rewardsData = await getRewardCalculationData(rewardEpochId);
-		if (!rewardsData) {
-			return null;
-		}
 		const rewardClaims = rewardsData.rewardClaims.find(
 			([_, [id, address, sum, claimType]]) =>
 				address.toLowerCase() === this.beneficiary.toLowerCase() && claimType === this.claimType,
@@ -95,8 +94,20 @@ export class Claimer {
 		}
 		const rewardClaimWithProofStructs: IRewardManager.RewardClaimWithProofStruct[] = [];
 		for (const epochId of claimableRewardEpochIds) {
-			const rewardClaimData = await this.getRewardClaimData(epochId);
+			let rewardClaimData: IRewardManager.RewardClaimWithProofStruct | null;
+			try {
+				rewardClaimData = await this.getRewardClaimData(epochId);
+			} catch (error) {
+				// The contract advances nextClaimableRewardEpochId up to
+				// lastEpochIdToClaim, so claiming past an epoch whose data we could
+				// not verify would permanently forfeit its rewards. Stop here and
+				// retry the remaining epochs on the next run.
+				console.error(`⚠️ Failed to fetch reward data for epoch ${epochId}: ${error}`);
+				console.error(`Not claiming epoch ${epochId} or later; will retry on the next run.`);
+				break;
+			}
 			if (!rewardClaimData) {
+				// Data exists but holds no claim for us — safe to skip past.
 				continue;
 			}
 			rewardClaimWithProofStructs.push(rewardClaimData);

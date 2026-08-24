@@ -125,11 +125,17 @@ program
 
 				console.log(`🎉 Claimable ${ClaimType[claimer.claimType]} reward epochs and amounts:`);
 				for (const epoch of claimableEpochs) {
-					const rewardData = await claimer.getRewardClaimData(epoch);
+					let rewardData: Awaited<ReturnType<Claimer["getRewardClaimData"]>>;
+					try {
+						rewardData = await claimer.getRewardClaimData(epoch);
+					} catch (error) {
+						console.log(`⚠️ Epoch ${epoch}: failed to fetch reward data (${error instanceof Error ? error.message : error})`);
+						continue;
+					}
 					if (rewardData?.body?.amount) {
 						console.log(`✨ Epoch ${epoch}: ${formatEther(rewardData.body.amount)}`);
 					} else {
-						console.log(`❌ Epoch ${epoch}: No reward data available`);
+						console.log(`❌ Epoch ${epoch}: no ${ClaimType[claimer.claimType]} reward entry`);
 					}
 				}
 			}

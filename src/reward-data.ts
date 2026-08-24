@@ -20,14 +20,11 @@ export function getRewardCalculationDataPath(rewardEpochId: number) {
   }
 }
 
+// Throws on any fetch/parse failure. A successful return means the epoch's
+// reward data definitively exists — callers may safely treat a missing claim
+// tuple in it as "no rewards for this epoch".
 export const getRewardCalculationData = async (rewardEpochId: number) => {
-  try {
   const rewardsDataPath = getRewardCalculationDataPath(rewardEpochId);
   const res = await axios.get(rewardsDataPath);
-  const rewardsData = RewardsDataSchema.parse(res.data);
-    return rewardsData;
-  } catch (error) {
-    console.error(`Error fetching rewards data for epoch ${rewardEpochId}: ${error}`);
-    return null
-  }
+  return RewardsDataSchema.parse(res.data);
 }
