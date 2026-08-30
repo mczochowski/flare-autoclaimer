@@ -27,6 +27,14 @@ function batches<T>(items: T[], size: number): T[][] {
 	return result;
 }
 
+export function flattenRewardStates<T>(groups: readonly (readonly T[])[]): T[] {
+	const states: T[] = [];
+	for (const group of groups) {
+		states.push(...group);
+	}
+	return states;
+}
+
 export class DelegationClaimer {
 	constructor(public readonly rewardOwners: string[]) {}
 
@@ -41,13 +49,13 @@ export class DelegationClaimer {
 				]);
 				const usesDelegationAccount = enabled && delegationAccount !== "0x0000000000000000000000000000000000000000";
 				const delegationAccountStates = usesDelegationAccount
-					? (await rewardManager.getStateOfRewards(delegationAccount))
-							.flat()
-							.filter((state) => Number(state.claimType) === ClaimType.WNAT)
+					? flattenRewardStates(await rewardManager.getStateOfRewards(delegationAccount)).filter(
+							(state) => Number(state.claimType) === ClaimType.WNAT,
+						)
 					: [];
 				return {
 					rewardOwner,
-					states: states.flat(),
+					states: flattenRewardStates(states),
 					delegationAccount: usesDelegationAccount ? delegationAccount : null,
 					delegationAccountStates,
 					allowedRecipients: [...allowedRecipients],
