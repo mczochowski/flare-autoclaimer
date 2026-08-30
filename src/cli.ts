@@ -1,152 +1,69 @@
 import { Command } from "commander";
-import { Claimer } from "./claimer";
-import dotenv from "dotenv";
-import { formatEther } from "ethers";
-import { ClaimType } from "./interfaces";
 import { z } from "zod";
-
-dotenv.config();
+import {
+	ClaimCategory,
+	claimCategories,
+	claimConfiguredRewards,
+	listConfiguredRewards,
+} from "./autoclaimer";
 
 const program = new Command();
+const categorySchema = z.enum(claimCategories);
+const epochSchema = z.coerce.number().int().nonnegative();
 
-program.name("reward-claimer").description("CLI to claim Flare rewards").version("1.0.0");
-
-const claimTypeSchema = z.union([z.literal("direct"), z.literal("fee")]);
-const epochSchema = z
-	.string()
-	.transform((value) => Number(value))
-	.refine((value) => value >= 0);
-
-const parseClaimType = (value: string) => {
-	const result = claimTypeSchema.safeParse(value);
-	if (!result.success) {
-		throw new Error("Invalid claim type. Please specify 'direct' or 'fee'.");
+function categoriesFrom(value: string | undefined): ClaimCategory[] {
+	if (!value) {
+		return [...claimCategories];
 	}
-	return result.data;
-};
-const parseEpoch = (value: string) => {
+	const result = categorySchema.safeParse(value.toLowerCase());
+	if (!result.success) {
+		throw new Error(`Invalid type. Expected one of: ${claimCategories.join(", ")}`);
+	}
+	return [result.data];
+}
+
+function epochFrom(value: string | undefined): number | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
 	const result = epochSchema.safeParse(value);
 	if (!result.success) {
-		throw new Error("Invalid epoch. Please specify a valid number.");
+		throw new Error("Epoch must be a non-negative integer");
 	}
 	return result.data;
-};
+}
 
-program
-	/*Examples for the claim command:
-    # Claim all unclaimed rewards for FEE and DIRECT types
-    yarn cli claim
-
-    # Claim FEE rewards for a specific epoch (e.g., epoch 100)
-    yarn cli claim -t fee -e 100
-
-    # Claim DIRECT rewards for a specific epoch (e.g., epoch 200)
-    yarn cli claim -t direct -e 200
-
-    # Claim all unclaimed rewards for DIRECT type
-    yarn cli claim -t direct 
-
-    # Claim FEE rewards for epoch 50
-    yarn cli claim --type fee --epoch 50
-  */
-	.command("claim")
-	.description("Claim DIRECT and FEE rewards")
-	.option("-t, --type <type>", 'Claim type ("direct", "fee"), by default tries to claim both')
-	.option("-e, --epoch <number>", "Specific epoch to claim rewards for, by default claims all unclaimed epochs")
-	.action(async (options) => {
-		//const claimer = new Claimer();
-
-		try {
-			// Claim for specific type
-			if (options.type) {
-				const claimType = parseClaimType(options.type);
-
-				let claimer: Claimer;
-
-				if (claimType === "direct") {
-					if (!Claimer.DIRECT) {
-						throw new Error("Claiming DIRECT requires SIGNING_POLICY_ADDRESS environment variable to be set.");
-					}
-					claimer = Claimer.DIRECT;
-				} else {
-					if (!Claimer.FEE) {
-						throw new Error("Claiming FEE requires IDENTITY_ADDRESS environment variable to be set.");
-					}
-					claimer = Claimer.FEE;
-				}
-
-				// Claim all epochs
-				if (options.epoch) {
-					const epoch = parseEpoch(options.epoch);
-					await claimer.claimRewards(epoch);
-				} else {
-					await claimer.claimAllUnclaimedRewards();
-				}
-			} else {
-				// Type not defined, claim all available types
-				const claimers = [Claimer.DIRECT, Claimer.FEE].filter((claimer): claimer is Claimer => claimer !== null);
-
-				if (options.epoch) {
-					const epoch = parseEpoch(options.epoch);
-					for (const claimer of claimers) {
-						await claimer.claimRewards(epoch);
-					}
-				} else {
-					for (const claimer of claimers) {
-						await claimer.claimAllUnclaimedRewards();
-					}
-				}
-			}
-		} catch (error) {
-			if (error instanceof Error) {
-				console.error(error.message);
-			} else {
-				console.error("An unknown error occurred.");
-			}
-			process.exit(1);
-		}
-	});
+program.name("flare-autoclaimer").description("Claim Flare FSP and validator staking rewards").version("1.0.0");
 
 program
 	.command("list")
-	.description("List claimable reward epochs and their amounts for FEE and DIRECT claim types")
-	.action(async () => {
-		const claimers = [Claimer.FEE, Claimer.DIRECT].filter((claimer): claimer is Claimer => claimer !== null);
-
-		try {
-			// Iterate through FEE and DIRECT claim types to list all claimable epochs
-			for (const claimer of claimers) {
-				// Get reward epochs with claimable rewards for the current claim type
-				const claimableEpochs = await claimer.getRewardEpochIdsWithClaimableRewards();
-				if (claimableEpochs === null) {
-					console.log(`No claimable ${ClaimType[claimer.claimType]} rewards found`);
-					continue;
-				}
-
-				console.log(`🎉 Claimable ${ClaimType[claimer.claimType]} reward epochs and amounts:`);
-				for (const epoch of claimableEpochs) {
-					let rewardData: Awaited<ReturnType<Claimer["getRewardClaimData"]>>;
-					try {
-						rewardData = await claimer.getRewardClaimData(epoch);
-					} catch (error) {
-						console.log(`⚠️ Epoch ${epoch}: failed to fetch reward data (${error instanceof Error ? error.message : error})`);
-						continue;
-					}
-					if (rewardData?.body?.amount) {
-						console.log(`✨ Epoch ${epoch}: ${formatEther(rewardData.body.amount)}`);
-					} else {
-						console.log(`❌ Epoch ${epoch}: no ${ClaimType[claimer.claimType]} reward entry`);
-					}
-				}
-			}
-		} catch (error) {
-			if (error instanceof Error) {
-				console.error(error.message);
-			} else {
-				console.error("An unknown error occurred.");
-			}
-			process.exit(1);
+	.description("Read and list claimable rewards without signing transactions")
+	.option("-t, --type <type>", `Reward type (${claimCategories.join(", ")})`)
+	.action(async (options) => {
+		const failures = await listConfiguredRewards(categoriesFrom(options.type));
+		if (failures.length > 0) {
+			process.exitCode = 1;
 		}
 	});
 
-program.parse();
+program
+	.command("claim")
+	.description("Claim configured rewards; all four types are claimed by default")
+	.option("-t, --type <type>", `Reward type (${claimCategories.join(", ")})`)
+	.option("-e, --epoch <number>", "Specific FSP epoch (DIRECT or FEE only)")
+	.action(async (options) => {
+		const categories = categoriesFrom(options.type);
+		const epoch = epochFrom(options.epoch);
+		if (epoch !== undefined && categories.some((category) => category === "ftso" || category === "validator")) {
+			throw new Error("--epoch can only be used with --type direct or --type fee");
+		}
+		const failures = await claimConfiguredRewards(categories, epoch);
+		if (failures.length > 0) {
+			process.exitCode = 1;
+		}
+	});
+
+program.parseAsync().catch((error) => {
+	console.error(error instanceof Error ? error.message : error);
+	process.exitCode = 1;
+});

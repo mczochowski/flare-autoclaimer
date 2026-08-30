@@ -1,11 +1,12 @@
 {
-  "name": "ftso-fee-claimer",
+  "name": "flare-autoclaimer",
   "version": "1.0.0",
-  "description": "Tool for claiming FTSO v2 fees",
+  "description": "Autoclaimer for Flare FSP and validator staking rewards",
   "license": "MIT",
   "scripts": {
     "typechain-ethers-v6": "typechain --target=ethers-v6 --out-dir=./src/types ./abi/*.json",
     "build": "yarn typechain-ethers-v6 && tsc",
+    "test": "yarn build && node --test tests/*.test.js",
     "cli": "yarn build && node dist/cli.js",
     "auto-claimer": "node dist/start-auto-claimer.js"
   },

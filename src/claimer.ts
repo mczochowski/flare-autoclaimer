@@ -1,51 +1,24 @@
-import { formatEther, Wallet } from "ethers";
+import { formatEther } from "ethers";
+import { assertFspAuthorization } from "./authorization";
+import { getConfig, recipientFor } from "./config";
 import { ZERO_BYTES32 } from "./configs/networks";
-import { rewardManager, flareSystemsManager, provider } from "./contracts";
+import { flareSystemsManager, rewardManager } from "./contracts";
 import { ClaimType } from "./interfaces";
-import { getRewardCalculationData } from "./reward-data";
+import { findRewardClaim, getRewardCalculationData } from "./reward-data";
 import type { IRewardManager } from "./types";
-import { configDotenv } from "dotenv";
-
-configDotenv();
+import { getExecutorSigner } from "./wallet";
 
 export class Claimer {
-	static get DIRECT() {
-		const signingPolicyAddress = process.env.SIGNING_POLICY_ADDRESS;
-		if (!signingPolicyAddress) {
-			return null;
-		}
-		return new Claimer(ClaimType.DIRECT, signingPolicyAddress);
-	}
-	static get FEE() {
-		const identityAddress = process.env.IDENTITY_ADDRESS;
-		if (!identityAddress) {
-			return null;
-		}
-		return new Claimer(ClaimType.FEE, identityAddress);
-	}
-
-	private rewardManager = rewardManager;
-
-	get recipientAddress(): string {
-		const recipient = process.env.CLAIM_RECIPIENT_ADDRESS;
-		if (!recipient) {
-			throw new Error("CLAIM_RECIPIENT_ADDRESS environment variable is not set");
-		}
-		return recipient;
-	}
-
-	get wrapRewards(): boolean {
-		const wrap = process.env.WRAP_REWARDS?.toLowerCase();
-
-		return wrap !== "false";
-	}
-
 	constructor(
-		public claimType: ClaimType,
-		public beneficiary: string,
+		public readonly claimType: ClaimType.DIRECT | ClaimType.FEE,
+		public readonly beneficiary: string,
 	) {}
 
-	async getRewardEpochIdsWithClaimableRewards() {
+	get recipientAddress(): string {
+		return recipientFor(this.beneficiary);
+	}
+
+	async getRewardEpochIdsWithClaimableRewards(): Promise<number[] | null> {
 		const [startRewardEpochId, endRewardEpochId] = await this.getClaimableRewardEpochIdRange();
 		if (endRewardEpochId < startRewardEpochId) {
 			return null;
@@ -53,151 +26,129 @@ export class Claimer {
 		const claimableRewardEpochIds: number[] = [];
 		for (let epochId = startRewardEpochId; epochId <= endRewardEpochId; epochId++) {
 			const rewardsHash = await flareSystemsManager.rewardsHash(epochId);
-			const rewardHashSigned = Boolean(rewardsHash) && rewardsHash !== ZERO_BYTES32;
-			if (rewardHashSigned) {
-				claimableRewardEpochIds.push(Number(epochId));
+			if (rewardsHash && rewardsHash !== ZERO_BYTES32) {
+				claimableRewardEpochIds.push(epochId);
 			}
 		}
-		if (claimableRewardEpochIds.length === 0) {
-			return null;
-		}
-		return claimableRewardEpochIds;
+		return claimableRewardEpochIds.length > 0 ? claimableRewardEpochIds : null;
 	}
 
-	// Returns null only when the epoch's reward data exists but holds no claim
-	// for this beneficiary/type. Throws when the data cannot be fetched at all.
 	async getRewardClaimData(rewardEpochId: number) {
 		const rewardsData = await getRewardCalculationData(rewardEpochId);
-		const rewardClaims = rewardsData.rewardClaims.find(
-			([_, [id, address, sum, claimType]]) =>
-				address.toLowerCase() === this.beneficiary.toLowerCase() && claimType === this.claimType,
-		);
-		if (!rewardClaims) {
-			return null;
-		}
-		const [merkleProof, [id, address, sum, claimType]] = rewardClaims;
-		return {
-			merkleProof,
-			body: {
-				rewardEpochId: BigInt(id),
-				beneficiary: address,
-				amount: BigInt(sum),
-				claimType: BigInt(claimType),
-			},
-		} satisfies IRewardManager.RewardClaimWithProofStruct;
+		return findRewardClaim(rewardsData, this.beneficiary, this.claimType);
 	}
 
 	async getRewardClaimWithProofStructs() {
 		const claimableRewardEpochIds = await this.getRewardEpochIdsWithClaimableRewards();
 		if (!claimableRewardEpochIds?.length) {
+			return [];
+		}
+		const claims: IRewardManager.RewardClaimWithProofStruct[] = [];
+		for (const epochId of claimableRewardEpochIds) {
+			try {
+				const rewardClaimData = await this.getRewardClaimData(epochId);
+				if (rewardClaimData) {
+					claims.push(rewardClaimData);
+				}
+			} catch (error) {
+				// RewardManager advances the owner's claim cursor to the requested
+				// epoch. Never claim past distribution data that we could not verify.
+				throw new Error(
+					`Failed to fetch ${ClaimType[this.claimType]} reward data for epoch ${epochId}; refusing to advance: ${error}`,
+				);
+			}
+		}
+		return claims;
+	}
+
+	async listClaimableRewards() {
+		const claims = await this.getRewardClaimWithProofStructs();
+		if (claims.length === 0) {
+			console.log(`No claimable ${ClaimType[this.claimType]} rewards for ${this.beneficiary}`);
 			return;
 		}
-		const rewardClaimWithProofStructs: IRewardManager.RewardClaimWithProofStruct[] = [];
-		for (const epochId of claimableRewardEpochIds) {
-			let rewardClaimData: IRewardManager.RewardClaimWithProofStruct | null;
-			try {
-				rewardClaimData = await this.getRewardClaimData(epochId);
-			} catch (error) {
-				// The contract advances nextClaimableRewardEpochId up to
-				// lastEpochIdToClaim, so claiming past an epoch whose data we could
-				// not verify would permanently forfeit its rewards. Stop here and
-				// retry the remaining epochs on the next run.
-				console.error(`⚠️ Failed to fetch reward data for epoch ${epochId}: ${error}`);
-				console.error(`Not claiming epoch ${epochId} or later; will retry on the next run.`);
-				break;
-			}
-			if (!rewardClaimData) {
-				// Data exists but holds no claim for us — safe to skip past.
-				continue;
-			}
-			rewardClaimWithProofStructs.push(rewardClaimData);
+		console.log(`${ClaimType[this.claimType]} rewards for ${this.beneficiary}:`);
+		for (const { body } of claims) {
+			console.log(`  epoch ${body.rewardEpochId}: ${formatEther(body.amount)} FLR`);
 		}
-		return rewardClaimWithProofStructs;
 	}
 
 	async claimAllUnclaimedRewards() {
-		const rewardClaimWithProofStructs = await this.getRewardClaimWithProofStructs();
-		if (!rewardClaimWithProofStructs?.length) {
-			console.log(`No claimable ${ClaimType[this.claimType]} rewards found`);
-			return;
+		const claims = await this.getRewardClaimWithProofStructs();
+		if (claims.length === 0) {
+			console.log(`No claimable ${ClaimType[this.claimType]} rewards for ${this.beneficiary}`);
+			return false;
 		}
-		const epochIdsWithRewardClaims = rewardClaimWithProofStructs.map(({ body }) => body.rewardEpochId);
+		const signer = getExecutorSigner();
+		await assertFspAuthorization(signer.address, this.beneficiary, this.recipientAddress);
+		const lastEpochIdToClaim = claims[claims.length - 1].body.rewardEpochId;
+		const connected = rewardManager.connect(signer);
+
 		console.log(
-			`🎉 ${ClaimType[this.claimType]} reward tuples found for epochs: ${epochIdsWithRewardClaims.join(", ")}`,
+			`Claiming ${ClaimType[this.claimType]} rewards for ${this.beneficiary} through epoch ${lastEpochIdToClaim}`,
 		);
-
-		const executorPrivateKey = process.env.CLAIM_EXECUTOR_PRIVATE_KEY;
-		if (!executorPrivateKey) {
-			throw new Error("CLAIM_EXECUTOR_PRIVATE_KEY environment variable is not set");
-		}
-		const claimExecutor = new Wallet(executorPrivateKey);
-
-		const lastEpochIdToClaim = epochIdsWithRewardClaims[epochIdsWithRewardClaims.length - 1];
-
-		console.log(`✨ Found unclaimed ${ClaimType[this.claimType]} reward epochs:`);
-		for (const {
-			body: { rewardEpochId, amount },
-		} of rewardClaimWithProofStructs) {
-			console.log(`💰 Epoch ${rewardEpochId}: ${formatEther(amount)}`);
-		}
-		console.log(`🚀 Claiming ${ClaimType[this.claimType]} rewards...`);
-
-		const tx = await this.rewardManager
-			.connect(claimExecutor.connect(provider))
-			.claim(
-				this.beneficiary,
-				this.recipientAddress,
-				lastEpochIdToClaim,
-				this.wrapRewards,
-				rewardClaimWithProofStructs,
-			);
-
-		console.log("Transaction submitted, waiting for confirmation...");
-
+		await connected.claim.staticCall(
+			this.beneficiary,
+			this.recipientAddress,
+			lastEpochIdToClaim,
+			getConfig().wrapRewards,
+			claims,
+		);
+		const tx = await connected.claim(
+			this.beneficiary,
+			this.recipientAddress,
+			lastEpochIdToClaim,
+			getConfig().wrapRewards,
+			claims,
+		);
+		console.log(`  submitted ${tx.hash}`);
 		await tx.wait();
-
-		console.log("🎉 Rewards claimed successfully!");
-		console.log(`Transaction hash: ${tx.hash}`);
+		console.log(`  confirmed ${tx.hash}`);
+		return true;
 	}
 
 	async claimRewards(epochId: number) {
-		console.log(`🎯 Claiming ${ClaimType[this.claimType]} rewards for epoch ${epochId}`);
-		const [_, endRewardEpochId] = await this.getClaimableRewardEpochIdRange();
+		const [startRewardEpochId, endRewardEpochId] = await this.getClaimableRewardEpochIdRange();
+		if (epochId < startRewardEpochId) {
+			console.log(`Epoch ${epochId} was already claimed or has expired for ${this.beneficiary}`);
+			return false;
+		}
 		if (epochId > endRewardEpochId) {
-			console.log(`❌ Epoch ${epochId} is not claimable yet`);
-			return;
+			console.log(`Epoch ${epochId} is not claimable yet`);
+			return false;
 		}
-		const rewardClaimData = await this.getRewardClaimData(epochId);
-		if (!rewardClaimData) {
-			console.log(`No claimable ${ClaimType[this.claimType]} rewards found`);
-			return;
+		const claim = await this.getRewardClaimData(epochId);
+		if (!claim) {
+			console.log(`No ${ClaimType[this.claimType]} reward for ${this.beneficiary} in epoch ${epochId}`);
+			return false;
 		}
-
-		const executorPrivateKey = process.env.CLAIM_EXECUTOR_PRIVATE_KEY;
-		if (!executorPrivateKey) {
-			throw new Error("CLAIM_EXECUTOR_PRIVATE_KEY environment variable is not set");
-		}
-		const claimExecutor = new Wallet(executorPrivateKey).connect(provider);
-
-		const amount = formatEther(rewardClaimData.body.amount);
-		console.log(`💸 Found ${amount} of rewards`);
-		console.log("🚀 Claiming...");
-
-		const tx = await this.rewardManager
-			.connect(claimExecutor)
-			.claim(this.beneficiary, this.recipientAddress, epochId, this.wrapRewards, [rewardClaimData]);
-
-		console.log("📨 Transaction submitted, waiting for confirmation...");
-
+		const signer = getExecutorSigner();
+		await assertFspAuthorization(signer.address, this.beneficiary, this.recipientAddress);
+		const connected = rewardManager.connect(signer);
+		const claims = [claim];
+		await connected.claim.staticCall(
+			this.beneficiary,
+			this.recipientAddress,
+			epochId,
+			getConfig().wrapRewards,
+			claims,
+		);
+		const tx = await connected.claim(
+			this.beneficiary,
+			this.recipientAddress,
+			epochId,
+			getConfig().wrapRewards,
+			claims,
+		);
+		console.log(`Submitted ${ClaimType[this.claimType]} epoch ${epochId}: ${tx.hash}`);
 		await tx.wait();
-
-		console.log("🎉 Rewards claimed successfully!");
-		console.log(`Transaction hash: ${tx.hash}`);
+		console.log(`Confirmed ${tx.hash}`);
+		return true;
 	}
 
-	private async getClaimableRewardEpochIdRange() {
-		const startRewardEpochId = await this.rewardManager.getNextClaimableRewardEpochId(this.beneficiary);
-		const [_, endRewardEpochId] = await this.rewardManager.getRewardEpochIdsWithClaimableRewards();
-		return [startRewardEpochId, endRewardEpochId];
+	private async getClaimableRewardEpochIdRange(): Promise<[number, number]> {
+		const start = await rewardManager.getNextClaimableRewardEpochId(this.beneficiary);
+		const [, end] = await rewardManager.getRewardEpochIdsWithClaimableRewards();
+		return [Number(start), Number(end)];
 	}
 }

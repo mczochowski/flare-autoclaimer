@@ -1,18 +1,11 @@
 services:
   auto-claimer:
-    image: ftso-fee-claimer
+    image: flare-autoclaimer
     env_file: .env
-    volumes:
-      - ./src:/app/src
     command: yarn auto-claimer
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
 
   cli:
-    image: ftso-fee-claimer
+    image: flare-autoclaimer
     env_file: .env
-    volumes:
-      - ./src:/app/src
     entrypoint: ["yarn", "cli"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"

@@ -1,6 +1,8 @@
 export type ContractAddress = string;
 
-type ContractNames = 'FlareSystemsManager' | 'RewardManager';
+type CoreContractNames = "FlareSystemsManager" | "RewardManager";
+type OptionalContractNames = "ClaimSetupManager" | "ValidatorRewardManager";
+type ContractNames = CoreContractNames | OptionalContractNames;
 
 export type ContractDefinitions = {
   [K in ContractNames]: {
@@ -10,5 +12,7 @@ export type ContractDefinitions = {
 }[ContractNames];
 
 export type NetworkContractAddresses = {
-  [K in ContractNames]: ContractDefinitions;
+  [K in CoreContractNames]: Extract<ContractDefinitions, { name: K }>;
+} & {
+  [K in OptionalContractNames]?: Extract<ContractDefinitions, { name: K }>;
 };
