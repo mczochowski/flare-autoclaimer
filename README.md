@@ -121,15 +121,25 @@ yarn build
 yarn auto-claimer
 ```
 
-The default interval is 12 minutes and can be changed with `POLL_INTERVAL_MINUTES`.
+The default interval is 5 minutes and can be changed with `POLL_INTERVAL_MINUTES`. Each cycle checks all four configured reward categories and submits transactions only for rewards that are available.
 
 With Docker:
 
 ```bash
-docker build -t flare-autoclaimer .
-docker compose up -d auto-claimer
+docker compose build
+docker compose up -d
 docker compose logs -f auto-claimer
 ```
+
+Compose runs a single, read-only service as a non-root user. Claim-cycle failures are logged and retried on the next cycle; if the process or container exits, `restart: unless-stopped` starts it again automatically.
+
+Inspect rewards in a one-off container without starting the autoclaimer:
+
+```bash
+docker compose run --rm auto-claimer node dist/cli.js list
+```
+
+Stop the service explicitly with `docker compose down`. An explicit stop is not automatically restarted.
 
 ## References
 

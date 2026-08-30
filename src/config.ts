@@ -79,7 +79,7 @@ export function getConfig() {
 			ftso: booleanSetting(process.env.FTSO_WRAP_REWARDS, "FTSO_WRAP_REWARDS"),
 			validator: booleanSetting(process.env.VALIDATOR_WRAP_REWARDS, "VALIDATOR_WRAP_REWARDS"),
 		},
-		pollIntervalMs: positiveInteger("POLL_INTERVAL_MINUTES", 12) * 60 * 1000,
+		pollIntervalMs: positiveInteger("POLL_INTERVAL_MINUTES", 5) * 60 * 1000,
 		maxProofsPerTransaction: positiveInteger("MAX_PROOFS_PER_TRANSACTION", 40),
 	};
 }
