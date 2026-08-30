@@ -11,7 +11,7 @@ It is based on [FlareOracle/ftso-fee-claimer](https://github.com/FlareOracle/fts
 
 ## How the claims are separated
 
-`DIRECT`, `FEE`, and weight-based FSP claims use Flare's current `RewardManager` and the official per-epoch Merkle distribution files. Direct and fee claims are sent with `RewardManager.claim`. Weight-based claims are initialized from the same verified distribution data and then sent with `RewardManager.autoClaim`.
+`DIRECT`, `FEE`, and weight-based FSP claims use Flare's current `RewardManager` and the official per-epoch Merkle distribution files. Direct and fee claims are sent with `RewardManager.claim`. Weight-based claims are initialized from the same verified distribution data and then claimed individually with `RewardManager.claim`, which allows independent FLR/WFLR selection. Owners with enabled delegation accounts use the protocol's `autoClaim` path, which always pays WFLR to the delegation account.
 
 Validator staking rewards do not use the FSP distribution files. They are read and claimed independently through `ValidatorRewardManager` at `0xc0CF3Aaf93bd978C5BC662564Aa73E331f2eC0B5`.
 
@@ -27,13 +27,13 @@ The Flare mainnet defaults are:
 
 The configured executor must be funded with enough FLR for gas.
 
-For FSP rewards, each reward owner must authorize the executor in `ClaimSetupManager`. DIRECT must be authorized by the signing-policy address; FEE must be authorized by the identity address. Weight-based reward owners must also authorize the executor for `autoClaim`.
+For FSP rewards, each reward owner must authorize the executor in `ClaimSetupManager`. DIRECT must be authorized by the signing-policy address; FEE must be authorized by the identity address. Weight-based reward owners must also authorize the executor.
 
 Validator staking rewards use a separate executor list. Each validator reward owner with a balance must authorize the executor using `ValidatorRewardManager.setClaimExecutors`.
 
 `CLAIM_RECIPIENT_ADDRESS` applies only to `DIRECT` and `FEE` claims. If it is blank, those rewards return to their beneficiary. If it is set, the applicable beneficiary must allowlist it in `ClaimSetupManager`.
 
-Weight-based FTSO delegation rewards ignore `CLAIM_RECIPIENT_ADDRESS`. `RewardManager.autoClaim` obtains each destination from `ClaimSetupManager`: the enabled delegation account when present, otherwise the reward owner. These rewards are always wrapped by the protocol.
+Weight-based FTSO delegation rewards ignore `CLAIM_RECIPIENT_ADDRESS`. For ordinary reward owners, the autoclaimer uses the sole recipient designated in `ClaimSetupManager`, falling back to the reward owner when none is configured. If a delegation account is enabled, the protocol requires `autoClaim`, pays WFLR to that delegation account, and therefore requires `FTSO_WRAP_REWARDS=true`.
 
 Validator staking rewards also ignore `CLAIM_RECIPIENT_ADDRESS`. The autoclaimer reads each owner's designated recipients from `ValidatorRewardManager.allowedClaimRecipients`. It uses the sole designated recipient when exactly one is configured, falls back to the reward owner when none is configured, and refuses to choose when multiple designated recipients are present.
 
@@ -57,6 +57,17 @@ VALIDATOR_REWARD_OWNER_ADDRESSES=0x...
 ```
 
 Values may be comma or whitespace separated.
+
+Each reward category pays native FLR by default. Override categories independently in `.env`:
+
+```dotenv
+DIRECT_WRAP_REWARDS=false
+FEE_WRAP_REWARDS=false
+FTSO_WRAP_REWARDS=false
+VALIDATOR_WRAP_REWARDS=false
+```
+
+Set a category to `true` to receive WFLR. Values other than `true` or `false` are rejected. `FTSO_WRAP_REWARDS=false` is supported for ordinary reward owners; an owner with an enabled delegation account must use `true` because Flare's `autoClaim` path always wraps.
 
 Install and build:
 

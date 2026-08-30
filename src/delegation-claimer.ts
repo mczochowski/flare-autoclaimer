@@ -1,7 +1,9 @@
 import { formatEther, hexlify } from "ethers";
+import { assertFspAuthorization } from "./authorization";
 import { getConfig } from "./config";
 import { flareSystemsManager, requireClaimSetupManager, rewardManager } from "./contracts";
 import { ClaimType } from "./interfaces";
+import { designatedRecipient } from "./recipient";
 import { getRewardCalculationData, getWeightBasedRewardClaims } from "./reward-data";
 import type { IRewardManager } from "./types";
 import { getExecutorSigner } from "./wallet";
@@ -12,6 +14,7 @@ type OwnerStates = {
 	states: RewardState[];
 	delegationAccount: string | null;
 	delegationAccountStates: RewardState[];
+	allowedRecipients: string[];
 };
 
 const claimTypeName = (claimType: bigint) => ClaimType[Number(claimType)] || `type ${claimType}`;
@@ -31,9 +34,10 @@ export class DelegationClaimer {
 		const claimSetupManager = requireClaimSetupManager();
 		return Promise.all(
 			this.rewardOwners.map(async (rewardOwner): Promise<OwnerStates> => {
-				const [[delegationAccount, enabled], states] = await Promise.all([
+				const [[delegationAccount, enabled], states, allowedRecipients] = await Promise.all([
 					claimSetupManager.getDelegationAccountData(rewardOwner),
 					rewardManager.getStateOfRewards(rewardOwner),
+					claimSetupManager.allowedClaimRecipients(rewardOwner),
 				]);
 				const usesDelegationAccount = enabled && delegationAccount !== "0x0000000000000000000000000000000000000000";
 				const delegationAccountStates = usesDelegationAccount
@@ -46,6 +50,7 @@ export class DelegationClaimer {
 					states: states.flat(),
 					delegationAccount: usesDelegationAccount ? delegationAccount : null,
 					delegationAccountStates,
+					allowedRecipients: [...allowedRecipients],
 				};
 			}),
 		);
@@ -53,17 +58,20 @@ export class DelegationClaimer {
 
 	async listClaimableRewards() {
 		const owners = await this.statesByOwner();
-		for (const { rewardOwner, states, delegationAccount, delegationAccountStates } of owners) {
+		const wrapRewards = getConfig().wrapRewards.ftso;
+		for (const { rewardOwner, states, delegationAccount, delegationAccountStates, allowedRecipients } of owners) {
 			const allStates = [...states, ...delegationAccountStates];
 			const claimable = allStates.filter((state) => state.amount > 0n);
+			const recipient = delegationAccount || designatedRecipient(rewardOwner, allowedRecipients, "FTSO");
+			const payoutToken = delegationAccount ? "WFLR (required by delegation-account autoClaim)" : wrapRewards ? "WFLR" : "FLR";
 			if (claimable.length === 0) {
 				const pending = allStates.filter((state) => !state.initialised).length;
 				console.log(
-					`No initialized weight-based FSP rewards for ${rewardOwner}${pending ? ` (${pending} reward states await initialization)` : ""}`,
+					`No initialized weight-based FSP rewards for ${rewardOwner}${pending ? ` (${pending} reward states await initialization)` : ""} (recipient: ${recipient}, payout: ${payoutToken})`,
 				);
 				continue;
 			}
-			console.log(`Weight-based FSP rewards for ${rewardOwner}:`);
+			console.log(`Weight-based FSP rewards for ${rewardOwner} (recipient: ${recipient}, payout: ${payoutToken}):`);
 			if (delegationAccount) {
 				console.log(`  delegation account: ${delegationAccount}`);
 			}
@@ -80,53 +88,105 @@ export class DelegationClaimer {
 			console.log("No FTSO reward owners configured");
 			return false;
 		}
-		await this.initialiseMissingWeightBasedClaims();
-
 		const signer = getExecutorSigner();
 		const claimSetupManager = requireClaimSetupManager();
-		const ownerStates = await this.statesByOwner();
-		const eligibleOwners: string[] = [];
-		let totalClaimable = 0n;
+		const wrapRewards = getConfig().wrapRewards.ftso;
+		const preflightStates = await this.statesByOwner();
+		const eligibleOwners = new Set<string>();
+		const failures: string[] = [];
 
-		for (const { rewardOwner, states, delegationAccountStates } of ownerStates) {
-			if (!(await claimSetupManager.isClaimExecutor(rewardOwner, signer.address))) {
-				console.warn(`Skipping ${rewardOwner}: executor ${signer.address} is not authorized for FSP autoclaiming`);
-				continue;
+		for (const { rewardOwner, delegationAccount, allowedRecipients } of preflightStates) {
+			try {
+				if (!(await claimSetupManager.isClaimExecutor(rewardOwner, signer.address))) {
+					console.warn(`Skipping ${rewardOwner}: executor ${signer.address} is not authorized for FSP claiming`);
+					continue;
+				}
+				if (delegationAccount) {
+					if (!wrapRewards) {
+						throw new Error(
+							`enabled delegation account ${delegationAccount} requires FTSO_WRAP_REWARDS=true because autoClaim always pays WFLR`,
+						);
+					}
+				} else {
+					const recipient = designatedRecipient(rewardOwner, allowedRecipients, "FTSO");
+					await assertFspAuthorization(signer.address, rewardOwner, recipient);
+				}
+				eligibleOwners.add(rewardOwner.toLowerCase());
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				console.error(`FTSO claim preflight for ${rewardOwner} failed: ${message}`);
+				failures.push(`${rewardOwner}: ${message}`);
 			}
-			const [, executorFee] = await claimSetupManager.getAutoClaimAddressesAndExecutorFee(signer.address, [rewardOwner]);
-			const amount = [...states, ...delegationAccountStates].reduce((sum, state) => sum + state.amount, 0n);
-			if (amount === 0n) {
-				continue;
-			}
-			if (amount < executorFee) {
-				console.warn(
-					`Skipping ${rewardOwner}: ${formatEther(amount)} FLR is below executor fee ${formatEther(executorFee)} FLR`,
-				);
-				continue;
-			}
-			eligibleOwners.push(rewardOwner);
-			totalClaimable += amount;
 		}
 
-		if (eligibleOwners.length === 0) {
-			console.log("No claimable weight-based FSP rewards");
+		if (eligibleOwners.size === 0) {
+			if (failures.length > 0) {
+				throw new Error(`${failures.length} FTSO claim(s) failed preflight: ${failures.join("; ")}`);
+			}
+			console.log("No eligible FTSO reward owners");
 			return false;
 		}
 
+		await this.initialiseMissingWeightBasedClaims();
+		const ownerStates = await this.statesByOwner();
 		const [, endEpoch] = await rewardManager.getRewardEpochIdsWithClaimableRewards();
 		const connected = rewardManager.connect(signer);
-		// Initialization is complete, so no Merkle proofs are needed in the
-		// autoClaim call itself. This keeps calldata and gas bounded.
 		const proofs: IRewardManager.RewardClaimWithProofStruct[] = [];
-		await connected.autoClaim.staticCall(eligibleOwners, endEpoch, proofs);
-		console.log(
-			`Claiming ${formatEther(totalClaimable)} FLR of weight-based FSP rewards for ${eligibleOwners.length} owners through epoch ${endEpoch}`,
-		);
-		const tx = await connected.autoClaim(eligibleOwners, endEpoch, proofs);
-		console.log(`  submitted ${tx.hash}`);
-		await tx.wait();
-		console.log(`  confirmed ${tx.hash}`);
-		return true;
+		let submitted = false;
+
+		for (const { rewardOwner, states, delegationAccount, delegationAccountStates, allowedRecipients } of ownerStates) {
+			if (!eligibleOwners.has(rewardOwner.toLowerCase())) {
+				continue;
+			}
+			try {
+				const amount = [...states, ...delegationAccountStates].reduce((sum, state) => sum + state.amount, 0n);
+				if (amount === 0n) {
+					continue;
+				}
+				if (delegationAccount) {
+					const [, executorFee] = await claimSetupManager.getAutoClaimAddressesAndExecutorFee(signer.address, [rewardOwner]);
+					if (amount < executorFee) {
+						console.warn(
+							`Skipping ${rewardOwner}: ${formatEther(amount)} FLR is below executor fee ${formatEther(executorFee)} FLR`,
+						);
+						continue;
+					}
+					await connected.autoClaim.staticCall([rewardOwner], endEpoch, proofs);
+					console.log(
+						`Claiming ${formatEther(amount)} FLR of weight-based FSP rewards for ${rewardOwner} to delegation account ${delegationAccount} as WFLR`,
+					);
+					const tx = await connected.autoClaim([rewardOwner], endEpoch, proofs);
+					console.log(`  submitted ${tx.hash}`);
+					await tx.wait();
+					console.log(`  confirmed ${tx.hash}`);
+					submitted = true;
+					continue;
+				}
+
+				const recipient = designatedRecipient(rewardOwner, allowedRecipients, "FTSO");
+				await connected.claim.staticCall(rewardOwner, recipient, endEpoch, wrapRewards, proofs);
+				console.log(
+					`Claiming ${formatEther(amount)} FLR of weight-based FSP rewards for ${rewardOwner} to ${recipient} as ${wrapRewards ? "WFLR" : "FLR"}`,
+				);
+				const tx = await connected.claim(rewardOwner, recipient, endEpoch, wrapRewards, proofs);
+				console.log(`  submitted ${tx.hash}`);
+				await tx.wait();
+				console.log(`  confirmed ${tx.hash}`);
+				submitted = true;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				console.error(`FTSO claim for ${rewardOwner} failed: ${message}`);
+				failures.push(`${rewardOwner}: ${message}`);
+			}
+		}
+
+		if (failures.length > 0) {
+			throw new Error(`${failures.length} FTSO claim(s) failed: ${failures.join("; ")}`);
+		}
+		if (!submitted) {
+			console.log("No claimable weight-based FSP rewards");
+		}
+		return submitted;
 	}
 
 	private async initialiseMissingWeightBasedClaims() {
@@ -179,7 +239,7 @@ export class DelegationClaimer {
 			const finalCount = await rewardManager.noOfInitialisedWeightBasedClaims(epoch);
 			if (finalCount < totalCount) {
 				throw new Error(
-					`Epoch ${epoch} still has only ${finalCount}/${totalCount} initialized weight-based claims; refusing to autoclaim`,
+					`Epoch ${epoch} still has only ${finalCount}/${totalCount} initialized weight-based claims; refusing to claim`,
 				);
 			}
 		}

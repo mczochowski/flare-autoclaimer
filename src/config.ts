@@ -46,6 +46,20 @@ function positiveInteger(name: string, fallback: number): number {
 	return value;
 }
 
+export function booleanSetting(value: string | undefined, name: string, fallback = false): boolean {
+	if (!value?.trim()) {
+		return fallback;
+	}
+	switch (value.trim().toLowerCase()) {
+		case "true":
+			return true;
+		case "false":
+			return false;
+		default:
+			throw new Error(`${name} must be true or false`);
+	}
+}
+
 export function getConfig() {
 	const rewardOwners = parseAddressList(process.env.REWARD_OWNER_ADDRESSES, "REWARD_OWNER_ADDRESSES");
 	const recipient = process.env.CLAIM_RECIPIENT_ADDRESS?.trim();
@@ -59,7 +73,12 @@ export function getConfig() {
 		validatorRewardOwners: categoryAddresses("VALIDATOR_REWARD_OWNER_ADDRESSES", rewardOwners),
 		directAndFeeClaimRecipient: recipient ? parseAddress(recipient, "CLAIM_RECIPIENT_ADDRESS") : null,
 		expectedExecutor: expectedExecutor ? parseAddress(expectedExecutor, "CLAIM_EXECUTOR_ADDRESS") : null,
-		wrapRewards: process.env.WRAP_REWARDS?.toLowerCase() !== "false",
+		wrapRewards: {
+			direct: booleanSetting(process.env.DIRECT_WRAP_REWARDS, "DIRECT_WRAP_REWARDS"),
+			fee: booleanSetting(process.env.FEE_WRAP_REWARDS, "FEE_WRAP_REWARDS"),
+			ftso: booleanSetting(process.env.FTSO_WRAP_REWARDS, "FTSO_WRAP_REWARDS"),
+			validator: booleanSetting(process.env.VALIDATOR_WRAP_REWARDS, "VALIDATOR_WRAP_REWARDS"),
+		},
 		pollIntervalMs: positiveInteger("POLL_INTERVAL_MINUTES", 12) * 60 * 1000,
 		maxProofsPerTransaction: positiveInteger("MAX_PROOFS_PER_TRANSACTION", 40),
 	};

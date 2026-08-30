@@ -18,6 +18,11 @@ export class Claimer {
 		return directOrFeeRecipientFor(this.beneficiary);
 	}
 
+	get wrapRewards(): boolean {
+		const wrapRewards = getConfig().wrapRewards;
+		return this.claimType === ClaimType.DIRECT ? wrapRewards.direct : wrapRewards.fee;
+	}
+
 	async getRewardEpochIdsWithClaimableRewards(): Promise<number[] | null> {
 		const [startRewardEpochId, endRewardEpochId] = await this.getClaimableRewardEpochIdRange();
 		if (endRewardEpochId < startRewardEpochId) {
@@ -67,7 +72,9 @@ export class Claimer {
 			console.log(`No claimable ${ClaimType[this.claimType]} rewards for ${this.beneficiary}`);
 			return;
 		}
-		console.log(`${ClaimType[this.claimType]} rewards for ${this.beneficiary}:`);
+		console.log(
+			`${ClaimType[this.claimType]} rewards for ${this.beneficiary} (recipient: ${this.recipientAddress}, payout: ${this.wrapRewards ? "WFLR" : "FLR"}):`,
+		);
 		for (const { body } of claims) {
 			console.log(`  epoch ${body.rewardEpochId}: ${formatEther(body.amount)} FLR`);
 		}
@@ -85,20 +92,20 @@ export class Claimer {
 		const connected = rewardManager.connect(signer);
 
 		console.log(
-			`Claiming ${ClaimType[this.claimType]} rewards for ${this.beneficiary} through epoch ${lastEpochIdToClaim}`,
+			`Claiming ${ClaimType[this.claimType]} rewards for ${this.beneficiary} through epoch ${lastEpochIdToClaim} to ${this.recipientAddress} as ${this.wrapRewards ? "WFLR" : "FLR"}`,
 		);
 		await connected.claim.staticCall(
 			this.beneficiary,
 			this.recipientAddress,
 			lastEpochIdToClaim,
-			getConfig().wrapRewards,
+			this.wrapRewards,
 			claims,
 		);
 		const tx = await connected.claim(
 			this.beneficiary,
 			this.recipientAddress,
 			lastEpochIdToClaim,
-			getConfig().wrapRewards,
+			this.wrapRewards,
 			claims,
 		);
 		console.log(`  submitted ${tx.hash}`);
@@ -130,14 +137,14 @@ export class Claimer {
 			this.beneficiary,
 			this.recipientAddress,
 			epochId,
-			getConfig().wrapRewards,
+			this.wrapRewards,
 			claims,
 		);
 		const tx = await connected.claim(
 			this.beneficiary,
 			this.recipientAddress,
 			epochId,
-			getConfig().wrapRewards,
+			this.wrapRewards,
 			claims,
 		);
 		console.log(`Submitted ${ClaimType[this.claimType]} epoch ${epochId}: ${tx.hash}`);
