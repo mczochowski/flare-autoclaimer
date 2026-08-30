@@ -149,6 +149,7 @@ export class DelegationClaimer {
 			try {
 				const amount = [...states, ...delegationAccountStates].reduce((sum, state) => sum + state.amount, 0n);
 				if (amount === 0n) {
+					console.log(`No claimable weight-based FSP rewards for ${rewardOwner}`);
 					continue;
 				}
 				if (delegationAccount) {
@@ -190,9 +191,6 @@ export class DelegationClaimer {
 
 		if (failures.length > 0) {
 			throw new Error(`${failures.length} FTSO claim(s) failed: ${failures.join("; ")}`);
-		}
-		if (!submitted) {
-			console.log("No claimable weight-based FSP rewards");
 		}
 		return submitted;
 	}
