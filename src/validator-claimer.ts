@@ -1,5 +1,6 @@
 import { formatEther } from "ethers";
 import { assertValidatorAuthorization } from "./authorization";
+import { recordConfirmedClaim } from "./claim-history";
 import { getConfig } from "./config";
 import { requireValidatorRewardManager } from "./contracts";
 import { designatedRecipient } from "./recipient";
@@ -77,6 +78,13 @@ export class ValidatorClaimer {
 				console.log(`  submitted ${tx.hash}`);
 				await tx.wait();
 				console.log(`  confirmed ${tx.hash}`);
+				await recordConfirmedClaim({
+					rewardType: "VALIDATOR_STAKING",
+					rewardOwnerAddress: rewardOwner,
+					recipientAddress: recipient,
+					amount: formatEther(unclaimed),
+					transactionHash: tx.hash,
+				});
 				submitted = true;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

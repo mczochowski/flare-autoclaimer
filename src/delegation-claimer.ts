@@ -1,10 +1,12 @@
 import { formatEther, hexlify } from "ethers";
 import { assertFspAuthorization } from "./authorization";
+import { recordConfirmedClaim, rewardEpochColumns } from "./claim-history";
 import { getConfig } from "./config";
 import { flareSystemsManager, requireClaimSetupManager, rewardManager } from "./contracts";
 import { ClaimType } from "./interfaces";
 import { designatedRecipient } from "./recipient";
 import { getRewardCalculationData, getWeightBasedRewardClaims } from "./reward-data";
+import { flattenRewardStates } from "./reward-states";
 import type { IRewardManager } from "./types";
 import { getExecutorSigner } from "./wallet";
 
@@ -25,14 +27,6 @@ function batches<T>(items: T[], size: number): T[][] {
 		result.push(items.slice(index, index + size));
 	}
 	return result;
-}
-
-export function flattenRewardStates<T>(groups: readonly (readonly T[])[]): T[] {
-	const states: T[] = [];
-	for (const group of groups) {
-		states.push(...group);
-	}
-	return states;
 }
 
 export class DelegationClaimer {
@@ -147,7 +141,8 @@ export class DelegationClaimer {
 				continue;
 			}
 			try {
-				const amount = [...states, ...delegationAccountStates].reduce((sum, state) => sum + state.amount, 0n);
+				const allStates = [...states, ...delegationAccountStates];
+				const amount = allStates.reduce((sum, state) => sum + state.amount, 0n);
 				if (amount === 0n) {
 					console.log(`No claimable weight-based FSP rewards for ${rewardOwner}`);
 					continue;
@@ -168,12 +163,26 @@ export class DelegationClaimer {
 					console.log(`  submitted ${tx.hash}`);
 					await tx.wait();
 					console.log(`  confirmed ${tx.hash}`);
+					await recordConfirmedClaim({
+						rewardType: "FTSO_DELEGATION",
+						rewardOwnerAddress: rewardOwner,
+						recipientAddress: delegationAccount,
+						...rewardEpochColumns(allStates.map((state) => state.rewardEpochId)),
+						amount: formatEther(amount - executorFee),
+						transactionHash: tx.hash,
+					});
 					submitted = true;
 					continue;
 				}
 
 				const recipient = designatedRecipient(rewardOwner, allowedRecipients, "FTSO");
-				await connected.claim.staticCall(rewardOwner, recipient, endEpoch, wrapRewards, proofs);
+				const claimedAmount = await connected.claim.staticCall(
+					rewardOwner,
+					recipient,
+					endEpoch,
+					wrapRewards,
+					proofs,
+				);
 				console.log(
 					`Claiming ${formatEther(amount)} FLR of weight-based FSP rewards for ${rewardOwner} to ${recipient} as ${wrapRewards ? "WFLR" : "FLR"}`,
 				);
@@ -181,6 +190,14 @@ export class DelegationClaimer {
 				console.log(`  submitted ${tx.hash}`);
 				await tx.wait();
 				console.log(`  confirmed ${tx.hash}`);
+				await recordConfirmedClaim({
+					rewardType: "FTSO_DELEGATION",
+					rewardOwnerAddress: rewardOwner,
+					recipientAddress: recipient,
+					...rewardEpochColumns(allStates.map((state) => state.rewardEpochId)),
+					amount: formatEther(claimedAmount),
+					transactionHash: tx.hash,
+				});
 				submitted = true;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

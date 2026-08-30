@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { Result } = require("ethers");
-const { flattenRewardStates } = require("../dist/delegation-claimer");
+const { flattenRewardStates } = require("../dist/reward-states");
 
 test("flattenRewardStates handles an empty ethers Result", () => {
 	const groups = Result.fromItems([]);

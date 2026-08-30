@@ -114,6 +114,20 @@ yarn cli claim --type fee --epoch 427
 
 Every transaction is simulated before submission and all transactions are sent sequentially from the executor, avoiding nonce collisions. A distribution fetch or proof-validation failure stops that affected claim before the owner's on-chain claim cursor can advance.
 
+When claiming all categories, weight-based FSP rewards are processed before DIRECT and FEE. This is required because Flare's `RewardManager.claim` also sweeps any initialized weight-based rewards through the requested epoch. A DIRECT- or FEE-only run is blocked when it would sweep those rewards to the DIRECT/FEE recipient; run the FTSO claim first.
+
+## Claim history CSV
+
+Every confirmed claim transaction is appended to `data/claims.csv` by default. The file is initialized with these columns even when a claim run finds no rewards:
+
+```text
+Date,Reward Type,Reward Owner Address,Recipient Address,Reward Epoch,Reward Epoch start (if covering multiple),Reward Epoch end (if covering multiple),Amount,Transaction hash,Transaction link
+```
+
+Reward types are `DIRECT`, `FEE`, `FTSO_DELEGATION`, and `VALIDATOR_STAKING`. `Date` is the UTC time at which confirmation was observed. A transaction covering one epoch uses `Reward Epoch`; a transaction covering multiple epochs leaves that column blank and uses the start/end columns. Validator staking claims leave all epoch columns blank. Amounts are decimal FLR or WFLR amounts according to that reward type's wrap setting.
+
+Change the local output path with `CLAIM_HISTORY_CSV`. Docker Compose always writes inside the container to `/data/claims.csv` and persists that file on the host as `./data/claims.csv`. CSV files under `data/` are ignored by Git.
+
 ## Continuous autoclaiming
 
 ```bash

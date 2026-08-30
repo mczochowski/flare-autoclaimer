@@ -1,10 +1,12 @@
 import { formatEther } from "ethers";
 import { assertFspAuthorization } from "./authorization";
+import { recordConfirmedClaim, rewardEpochColumns } from "./claim-history";
 import { directOrFeeRecipientFor, getConfig } from "./config";
 import { ZERO_BYTES32 } from "./configs/networks";
 import { flareSystemsManager, rewardManager } from "./contracts";
 import { ClaimType } from "./interfaces";
 import { findRewardClaim, getRewardCalculationData } from "./reward-data";
+import { flattenRewardStates } from "./reward-states";
 import type { IRewardManager } from "./types";
 import { getExecutorSigner } from "./wallet";
 
@@ -21,6 +23,10 @@ export class Claimer {
 	get wrapRewards(): boolean {
 		const wrapRewards = getConfig().wrapRewards;
 		return this.claimType === ClaimType.DIRECT ? wrapRewards.direct : wrapRewards.fee;
+	}
+
+	get rewardType(): "DIRECT" | "FEE" {
+		return this.claimType === ClaimType.DIRECT ? "DIRECT" : "FEE";
 	}
 
 	async getRewardEpochIdsWithClaimableRewards(): Promise<number[] | null> {
@@ -86,15 +92,16 @@ export class Claimer {
 			console.log(`No claimable ${ClaimType[this.claimType]} rewards for ${this.beneficiary}`);
 			return false;
 		}
-		const signer = getExecutorSigner();
-		await assertFspAuthorization(signer.address, this.beneficiary, this.recipientAddress);
 		const lastEpochIdToClaim = claims[claims.length - 1].body.rewardEpochId;
+		const signer = getExecutorSigner();
+		await this.assertNoWeightBasedRewardsThrough(lastEpochIdToClaim);
+		await assertFspAuthorization(signer.address, this.beneficiary, this.recipientAddress);
 		const connected = rewardManager.connect(signer);
 
 		console.log(
 			`Claiming ${ClaimType[this.claimType]} rewards for ${this.beneficiary} through epoch ${lastEpochIdToClaim} to ${this.recipientAddress} as ${this.wrapRewards ? "WFLR" : "FLR"}`,
 		);
-		await connected.claim.staticCall(
+		const claimedAmount = await connected.claim.staticCall(
 			this.beneficiary,
 			this.recipientAddress,
 			lastEpochIdToClaim,
@@ -111,6 +118,14 @@ export class Claimer {
 		console.log(`  submitted ${tx.hash}`);
 		await tx.wait();
 		console.log(`  confirmed ${tx.hash}`);
+		await recordConfirmedClaim({
+			rewardType: this.rewardType,
+			rewardOwnerAddress: this.beneficiary,
+			recipientAddress: this.recipientAddress,
+			...rewardEpochColumns(claims.map(({ body }) => body.rewardEpochId)),
+			amount: formatEther(claimedAmount),
+			transactionHash: tx.hash,
+		});
 		return true;
 	}
 
@@ -130,10 +145,11 @@ export class Claimer {
 			return false;
 		}
 		const signer = getExecutorSigner();
+		await this.assertNoWeightBasedRewardsThrough(epochId);
 		await assertFspAuthorization(signer.address, this.beneficiary, this.recipientAddress);
 		const connected = rewardManager.connect(signer);
 		const claims = [claim];
-		await connected.claim.staticCall(
+		const claimedAmount = await connected.claim.staticCall(
 			this.beneficiary,
 			this.recipientAddress,
 			epochId,
@@ -150,6 +166,14 @@ export class Claimer {
 		console.log(`Submitted ${ClaimType[this.claimType]} epoch ${epochId}: ${tx.hash}`);
 		await tx.wait();
 		console.log(`Confirmed ${tx.hash}`);
+		await recordConfirmedClaim({
+			rewardType: this.rewardType,
+			rewardOwnerAddress: this.beneficiary,
+			recipientAddress: this.recipientAddress,
+			...rewardEpochColumns([claim.body.rewardEpochId]),
+			amount: formatEther(claimedAmount),
+			transactionHash: tx.hash,
+		});
 		return true;
 	}
 
@@ -157,5 +181,17 @@ export class Claimer {
 		const start = await rewardManager.getNextClaimableRewardEpochId(this.beneficiary);
 		const [, end] = await rewardManager.getRewardEpochIdsWithClaimableRewards();
 		return [Number(start), Number(end)];
+	}
+
+	private async assertNoWeightBasedRewardsThrough(endEpochId: bigint | number | string) {
+		const states = flattenRewardStates(await rewardManager.getStateOfRewards(this.beneficiary));
+		const wouldSweepWeightBasedRewards = states.some(
+			(state) => state.amount > 0n && state.rewardEpochId <= BigInt(endEpochId),
+		);
+		if (wouldSweepWeightBasedRewards) {
+			throw new Error(
+				`${ClaimType[this.claimType]} claim for ${this.beneficiary} would also sweep weight-based FSP rewards to the DIRECT/FEE recipient; claim FTSO rewards first`,
+			);
+		}
 	}
 }

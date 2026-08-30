@@ -6,6 +6,10 @@ services:
     image: flare-autoclaimer:local
     env_file:
       - .env
+    environment:
+      CLAIM_HISTORY_CSV: /data/claims.csv
+    volumes:
+      - ./data:/data
     restart: unless-stopped
     init: true
     read_only: true

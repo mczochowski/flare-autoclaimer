@@ -18,7 +18,9 @@ WORKDIR /app
 COPY package.json yarn.lock ./
 RUN corepack enable \
 	&& yarn install --frozen-lockfile --production \
-	&& yarn cache clean
+	&& yarn cache clean \
+	&& mkdir -p /data \
+	&& chown node:node /data
 
 COPY --from=build --chown=node:node /app/dist ./dist
 
