@@ -31,7 +31,11 @@ For FSP rewards, each reward owner must authorize the executor in `ClaimSetupMan
 
 Validator staking rewards use a separate executor list. Each validator reward owner with a balance must authorize the executor using `ValidatorRewardManager.setClaimExecutors`.
 
-By default, each claim is paid back to its reward owner. This is always an allowed recipient and avoids adding a central recipient to every allowlist. If `CLAIM_RECIPIENT_ADDRESS` is configured, that address must be allowlisted by each applicable owner in the corresponding reward manager. Weight-based `autoClaim` rewards always follow the ClaimSetupManager destination and are wrapped by the protocol.
+`CLAIM_RECIPIENT_ADDRESS` applies only to `DIRECT` and `FEE` claims. If it is blank, those rewards return to their beneficiary. If it is set, the applicable beneficiary must allowlist it in `ClaimSetupManager`.
+
+Weight-based FTSO delegation rewards ignore `CLAIM_RECIPIENT_ADDRESS`. `RewardManager.autoClaim` obtains each destination from `ClaimSetupManager`: the enabled delegation account when present, otherwise the reward owner. These rewards are always wrapped by the protocol.
+
+Validator staking rewards also ignore `CLAIM_RECIPIENT_ADDRESS`. The autoclaimer reads each owner's designated recipients from `ValidatorRewardManager.allowedClaimRecipients`. It uses the sole designated recipient when exactly one is configured, falls back to the reward owner when none is configured, and refuses to choose when multiple designated recipients are present.
 
 ## Setup
 

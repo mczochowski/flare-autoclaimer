@@ -1,8 +1,29 @@
 import { formatEther } from "ethers";
 import { assertValidatorAuthorization } from "./authorization";
-import { getConfig, recipientFor } from "./config";
+import { getConfig } from "./config";
 import { requireValidatorRewardManager } from "./contracts";
 import { getExecutorSigner } from "./wallet";
+
+const sameAddress = (left: string, right: string) => left.toLowerCase() === right.toLowerCase();
+
+export function designatedValidatorRecipient(rewardOwner: string, allowedRecipients: readonly string[]): string {
+	const recipientsByAddress = new Map<string, string>();
+	for (const recipient of allowedRecipients) {
+		if (!sameAddress(recipient, rewardOwner) && !recipientsByAddress.has(recipient.toLowerCase())) {
+			recipientsByAddress.set(recipient.toLowerCase(), recipient);
+		}
+	}
+	const designatedRecipients = [...recipientsByAddress.values()];
+	if (designatedRecipients.length === 0) {
+		return rewardOwner;
+	}
+	if (designatedRecipients.length === 1) {
+		return designatedRecipients[0];
+	}
+	throw new Error(
+		`${rewardOwner} has multiple designated validator claim recipients; refusing to choose: ${designatedRecipients.join(", ")}`,
+	);
+}
 
 export class ValidatorClaimer {
 	constructor(public readonly rewardOwners: string[]) {}
@@ -10,9 +31,15 @@ export class ValidatorClaimer {
 	async listClaimableRewards() {
 		const manager = requireValidatorRewardManager();
 		for (const rewardOwner of this.rewardOwners) {
-			const [totalReward, claimedReward] = await manager.getStateOfRewards(rewardOwner);
+			const [[totalReward, claimedReward], allowedRecipients] = await Promise.all([
+				manager.getStateOfRewards(rewardOwner),
+				manager.allowedClaimRecipients(rewardOwner),
+			]);
 			const unclaimed = totalReward - claimedReward;
-			console.log(`Validator staking rewards for ${rewardOwner}: ${formatEther(unclaimed)} FLR`);
+			const recipient = designatedValidatorRecipient(rewardOwner, [...allowedRecipients]);
+			console.log(
+				`Validator staking rewards for ${rewardOwner}: ${formatEther(unclaimed)} FLR (recipient: ${recipient})`,
+			);
 		}
 	}
 
@@ -32,17 +59,17 @@ export class ValidatorClaimer {
 
 		for (const rewardOwner of this.rewardOwners) {
 			try {
-				const [totalReward, claimedReward] = await manager.getStateOfRewards(rewardOwner);
+				const [[totalReward, claimedReward], claimExecutors, allowedRecipients] = await Promise.all([
+					manager.getStateOfRewards(rewardOwner),
+					manager.claimExecutors(rewardOwner),
+					manager.allowedClaimRecipients(rewardOwner),
+				]);
 				const unclaimed = totalReward - claimedReward;
 				if (unclaimed === 0n) {
 					console.log(`No validator staking rewards for ${rewardOwner}`);
 					continue;
 				}
-				const recipient = recipientFor(rewardOwner);
-				const [claimExecutors, allowedRecipients] = await Promise.all([
-					manager.claimExecutors(rewardOwner),
-					manager.allowedClaimRecipients(rewardOwner),
-				]);
+				const recipient = designatedValidatorRecipient(rewardOwner, [...allowedRecipients]);
 				await assertValidatorAuthorization(
 					signer.address,
 					rewardOwner,
@@ -57,7 +84,9 @@ export class ValidatorClaimer {
 					unclaimed,
 					getConfig().wrapRewards,
 				);
-				console.log(`Claiming ${formatEther(unclaimed)} FLR of validator staking rewards for ${rewardOwner}`);
+				console.log(
+					`Claiming ${formatEther(unclaimed)} FLR of validator staking rewards for ${rewardOwner} to ${recipient}`,
+				);
 				const tx = await connected.claim(rewardOwner, recipient, unclaimed, getConfig().wrapRewards);
 				console.log(`  submitted ${tx.hash}`);
 				await tx.wait();

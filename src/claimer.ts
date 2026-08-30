@@ -1,6 +1,6 @@
 import { formatEther } from "ethers";
 import { assertFspAuthorization } from "./authorization";
-import { getConfig, recipientFor } from "./config";
+import { directOrFeeRecipientFor, getConfig } from "./config";
 import { ZERO_BYTES32 } from "./configs/networks";
 import { flareSystemsManager, rewardManager } from "./contracts";
 import { ClaimType } from "./interfaces";
@@ -15,7 +15,7 @@ export class Claimer {
 	) {}
 
 	get recipientAddress(): string {
-		return recipientFor(this.beneficiary);
+		return directOrFeeRecipientFor(this.beneficiary);
 	}
 
 	async getRewardEpochIdsWithClaimableRewards(): Promise<number[] | null> {

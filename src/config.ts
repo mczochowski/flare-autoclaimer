@@ -57,7 +57,7 @@ export function getConfig() {
 		feeBeneficiaries: categoryAddresses("FEE_BENEFICIARY_ADDRESSES", rewardOwners),
 		ftsoRewardOwners: categoryAddresses("FTSO_REWARD_OWNER_ADDRESSES", rewardOwners),
 		validatorRewardOwners: categoryAddresses("VALIDATOR_REWARD_OWNER_ADDRESSES", rewardOwners),
-		claimRecipient: recipient ? parseAddress(recipient, "CLAIM_RECIPIENT_ADDRESS") : null,
+		directAndFeeClaimRecipient: recipient ? parseAddress(recipient, "CLAIM_RECIPIENT_ADDRESS") : null,
 		expectedExecutor: expectedExecutor ? parseAddress(expectedExecutor, "CLAIM_EXECUTOR_ADDRESS") : null,
 		wrapRewards: process.env.WRAP_REWARDS?.toLowerCase() !== "false",
 		pollIntervalMs: positiveInteger("POLL_INTERVAL_MINUTES", 12) * 60 * 1000,
@@ -65,6 +65,6 @@ export function getConfig() {
 	};
 }
 
-export function recipientFor(rewardOwner: string): string {
-	return getConfig().claimRecipient || rewardOwner;
+export function directOrFeeRecipientFor(rewardOwner: string): string {
+	return getConfig().directAndFeeClaimRecipient || rewardOwner;
 }
